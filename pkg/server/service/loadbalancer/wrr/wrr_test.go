@@ -1,12 +1,11 @@
 package wrr
 
 import (
+	"github.com/stretchr/testify/assert"
+	"github.com/traefik/traefik/v2/pkg/config/dynamic"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/traefik/traefik/v2/pkg/config/dynamic"
 )
 
 func Int(v int) *int { return &v }
@@ -139,4 +138,62 @@ func TestBalancerBias(t *testing.T) {
 	wantSequence := []string{"A", "A", "A", "B", "A", "A", "A", "A", "B", "A", "A", "A", "B", "A"}
 
 	assert.Equal(t, wantSequence, recorder.sequence)
+}
+
+// TestBalancerBiasWeightZero makes sure that the WRR algorithm don't use server with zero weight
+func TestBalancerBiasWeightZero(t *testing.T) {
+	balancer := New(nil)
+
+	balancer.AddService("first", http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("server", "A")
+		rw.WriteHeader(http.StatusOK)
+	}), Int(11))
+
+	balancer.AddService("second", http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("server", "B")
+		rw.WriteHeader(http.StatusOK)
+	}), Int(3))
+
+	balancer.AddService("third", http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("server", "C")
+		rw.WriteHeader(http.StatusOK)
+	}), Int(0))
+
+	recorder := &responseRecorder{ResponseRecorder: httptest.NewRecorder(), save: map[string]int{}}
+
+	for i := 0; i < 14; i++ {
+		balancer.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	}
+
+	wantSequence := []string{"A", "A", "A", "B", "A", "A", "A", "A", "B", "A", "A", "A", "B", "A"}
+	assert.Equal(t, wantSequence, recorder.sequence)
+}
+
+// TestStickyWeightZero makes sure that the WRR algorithm use zero weighted server with cookie
+func TestStickyWeightZero(t *testing.T) {
+	balancer := New(&dynamic.Sticky{
+		Cookie: &dynamic.Cookie{Name: "test"},
+	})
+
+	balancer.AddService("first", http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("server", "first")
+		rw.WriteHeader(http.StatusOK)
+	}), Int(0))
+
+	balancer.AddService("second", http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("server", "second")
+		rw.WriteHeader(http.StatusOK)
+	}), Int(1))
+
+	recorder := &responseRecorder{ResponseRecorder: httptest.NewRecorder(), save: map[string]int{}}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "test", Value: "first"})
+	for i := 0; i < 3; i++ {
+		recorder.ResponseRecorder = httptest.NewRecorder()
+		balancer.ServeHTTP(recorder, req)
+	}
+
+	assert.Equal(t, 3, recorder.save["first"])
+	assert.Equal(t, 0, recorder.save["second"])
 }

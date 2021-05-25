@@ -91,6 +91,13 @@ func (b *Balancer) nextServer() (*namedHandler, error) {
 
 	// Pick handler with closest deadline.
 	handler := heap.Pop(b).(*namedHandler)
+	// Test if handler allow incomming request
+	for handler.weight == 0 {
+		if b.Len() == 0 {
+			return nil, fmt.Errorf("no servers with weight > 0")
+		}
+		handler = heap.Pop(b).(*namedHandler)
+	}
 
 	// curDeadline should be handler's deadline so that new added entry would have a fair competition environment with the old ones.
 	b.curDeadline = handler.deadline
@@ -136,13 +143,13 @@ func (b *Balancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // AddService adds a handler.
 // It is not thread safe with ServeHTTP.
-// A handler with a non-positive weight is ignored.
+// A handler with a negative weight is ignored.
 func (b *Balancer) AddService(name string, handler http.Handler, weight *int) {
 	w := 1
 	if weight != nil {
 		w = *weight
 	}
-	if w <= 0 { // non-positive weight is meaningless
+	if w < 0 { // negative weight is meaningless
 		return
 	}
 
@@ -150,7 +157,11 @@ func (b *Balancer) AddService(name string, handler http.Handler, weight *int) {
 
 	// use RWLock to protect b.curDeadline
 	b.mutex.RLock()
-	h.deadline = b.curDeadline + 1/h.weight
+	h.deadline = b.curDeadline
+	if h.weight > 0 {
+		h.deadline += 1/h.weight
+	}
+
 	b.mutex.RUnlock()
 
 	heap.Push(b, h)
